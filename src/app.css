@@ -1,0 +1,58 @@
+/* Styles CSS globaux de l'application */
+
+/* Variables CSS personnalisées - peuvent être réutilisées dans tout le projet */
+:root {
+  /* Police système optimisée pour chaque plateforme */
+  --font-system: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell,
+    sans-serif;
+  
+  /* Couleur principale de l'application */
+  --primary: #007bff;
+  
+  /* Espacement standard utilisé dans l'application */
+  --gap: 1rem;
+}
+
+/* Réinitialisation CSS pour tous les éléments */
+* {
+  box-sizing: border-box; /* Inclut padding et border dans la largeur totale */
+  margin: 0; /* Supprime les marges par défaut */
+  padding: 0; /* Supprime les espacements par défaut */
+}
+
+/* Styles pour l'élément html */
+html {
+  block-size: 100%; /* Hauteur complète de la page */
+  background-color: bisque; /* Couleur de fond beige */
+}
+
+/* Styles pour le corps de la page */
+body {
+  min-block-size: 100%; /* Hauteur minimale de 100% */
+  font-family: var(--font-system); /* Utilise la police définie dans :root */
+  line-height: 1.5; /* Espacement entre les lignes pour la lisibilité */
+  -webkit-font-smoothing: antialiased; /* Améliore le rendu des polices sur WebKit */
+}
+
+/* Styles pour les éléments de formulaire */
+button,
+textarea,
+input {
+  font: inherit; /* Hérite de la police du parent */
+  color: inherit; /* Hérite de la couleur du parent */
+}
+
+/* Style pour les éléments en focus (accessibilité) */
+:focus-visible {
+  outline: 2px solid var(--primary); /* Contour bleu pour le focus */
+  outline-offset: 2px; /* Espacement du contour */
+}
+
+/* Media query pour les utilisateurs préférant les animations réduites */
+/* Améliore l'accessibilité pour les personnes sensibles aux mouvements */
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.01ms !important; /* Animations très courtes */
+    transition-duration: 0.01ms !important; /* Transitions très courtes */
+  }
+}
