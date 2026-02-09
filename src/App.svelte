@@ -1,158 +1,860 @@
-<!-- 
-  Fichier principal de l'application Svelte
-  Ce fichier contient l'interface de chat complète
--->
-
-<!-- Structure HTML de l'application -->
-<div class="container">
-  <!-- Conteneur principal qui occupe toute la hauteur de l'écran -->
+<script>
+  import Markdown from "svelte-exmarkdown";
   
-  <div class="content">
-    <!-- Zone de contenu flexible -->
+  import "./app.css";
+  
+  import "./md.css";
+  
+  import { onMount } from "svelte";
+  
+  let conversations = $state([]);
+  
+  let selectedConversation = $state(null);
+  
+  let messages = $state([]);
+  
+  let pendingMessage = $state("");
+  
+  let isLoading = $state(false);
+  
+  let error = $state(null);
+  
+  let newConversationTitle = $state("");
+  let mistralToken = $state("");
+  
+  let showTokenInput = $state(true); 
+
+  let showSidebar = $state(false);
+  
+  let toggleButtonClass = $derived(showSidebar ? "toggle-sidebar sidebar-open" : "toggle-sidebar sidebar-closed");
+  
+  let sidebarClass = $derived(showSidebar ? "sidebar show" : "sidebar");
+  
+  let chatContainerClass = $derived(showSidebar ? "chat-container" : "chat-container full");
+
+  function getSendButtonText() {
+    if (isLoading) {
+      return "Envoi...";
+    } else {
+      return "Envoyer";
+    }
+  }
+
+  let sendButtonDisabled = $derived(
+    isLoading === true || pendingMessage.replace(/^\s+|\s+$/g, '').length === 0
+  );
+
+  onMount(async () => {
+    const savedToken = localStorage.getItem("mistralToken");
+    if (savedToken !== null) {
+      mistralToken = savedToken;
+    }
+
+    const response = await fetch(
+      "http://localhost:8090/api/collections/conversations/records"
+    );
     
-    <div class="chat-container">
-      <!-- Conteneur spécifique au chat -->
+    if (response.ok === false) {
+      console.warn("Impossible de charger les conversations");
+      conversations = [];
+      return; 
+    }
+    
+    const data = await response.json();
+    
+    if (data && data.items) {
+      conversations = data.items;
       
-      <div class="messages">
-        <!-- Zone d'affichage des messages -->
+      if (conversations.length > 0) {
+        selectedConversation = conversations[conversations.length - 1];
+      }
+      
+      console.log(`${conversations.length} conversations chargées`);
+      
+    } else {
+      console.warn("⚠️ Aucune conversation reçue depuis PocketBase");
+      conversations = [];
+    }
+  });
+
+  async function loadMessages(conversationId) {
+    const response = await fetch(
+      `http://localhost:8090/api/collections/messages/records?filter=(conversation='${conversationId}')`
+    );
+    
+    if (response.ok === false) {
+      console.warn("Impossible de charger les messages");
+      messages = [];
+      return; 
+    }
+    
+    const data = await response.json();
+    
+    if (data && data.items) {
+      messages = convertPocketBaseToMessages(data.items);
+      
+      console.log(`${messages.length} messages chargés pour la conversation "${selectedConversation.title}"`);
+      
+    } else {
+      console.warn("⚠️ Aucun message reçu depuis PocketBase");
+      messages = [];
+    }
+  }
+
+  $effect(() => {
+    if (selectedConversation) {
+      loadMessages(selectedConversation.id);
+    } else {
+      messages = [];
+    }
+  });
+
+  function createTimestamp() {
+    return Date.now();
+  }
+
+  function formatTimestamp(timestamp) {
+    const dateObject = new Date(timestamp);
+    
+    const hours = dateObject.getHours();
+    const minutes = dateObject.getMinutes();
+    
+    let formattedHours = hours;
+    if (hours < 10) {
+      formattedHours = "0" + hours;
+    }
+    
+    let formattedMinutes = minutes;
+    if (minutes < 10) {
+      formattedMinutes = "0" + minutes;
+    }
+    
+    return formattedHours + ":" + formattedMinutes;
+  }
+
+  function handleTokenSubmit() {
+    
+    const cleanToken = mistralToken.replace(/^\s+|\s+$/g, '');
+    
+    if (cleanToken.length === 0) {
+      console.warn("Token vide, impossible de continuer");
+      return; 
+    }
+    
+    localStorage.setItem("mistralToken", cleanToken);
+    
+    mistralToken = cleanToken;
+    
+    showTokenInput = false;
+  }
+
+  function convertMessagesForAPI(messagesList) {
+    const convertedMessages = [];
+    
+    for (let i = 0; i < messagesList.length; i++) {
+      const currentMessage = messagesList[i];
+      
+      const apiMessage = {
+        role: currentMessage.role,      
+        content: currentMessage.content 
+      };
+      
+      convertedMessages.push(apiMessage);
+    }
+    
+    return convertedMessages;
+  }
+
+  function convertPocketBaseToMessages(pocketbaseItems) {
+    const convertedMessages = [];
+    
+    for (let i = 0; i < pocketbaseItems.length; i++) {
+      const currentItem = pocketbaseItems[i];
+      
+      let messageRole;
+      if (currentItem.is_ai_response) {
+        messageRole = "assistant"; 
+      } else {
+        messageRole = "user"; 
+      }
+      
+      const formattedMessage = {
+        role: messageRole,
+        content: currentItem.content,    
+        timestamp: currentItem.created,  
+      };
+      
+      convertedMessages.push(formattedMessage);
+    }
+    
+    return convertedMessages;
+  }
+
+  function filterConversationsWithoutId(conversationsList, conversationIdToRemove) {
+    const remainingConversations = [];
+    
+    for (let i = 0; i < conversationsList.length; i++) {
+      const currentConversation = conversationsList[i];
+      
+      if (currentConversation.id !== conversationIdToRemove) {
+        remainingConversations.push(currentConversation);
+      }
+    }
+    
+    return remainingConversations;
+  }
+
+  function toggleSidebar() {
+    showSidebar = !showSidebar;
+  }
+
+  function selectConversation(conversation) {
+    selectedConversation = conversation;
+    
+    showSidebar = false;
+  }
+
+  function handleTextareaKeyDown(event) {
+    if (event.key === "Enter") {
+      if (event.shiftKey === true) {
+        return;
+      }
+      
+      event.preventDefault();
+      
+      sendMessage();
+    }
+  }
+
+  function handleTokenKeyDown(event) {
+    if (event.key === "Enter") {
+      handleTokenSubmit();
+    }
+  }
+
+  async function createConversation() {
+    const cleanTitle = newConversationTitle.replace(/^\s+|\s+$/g, '');
+    
+    if (cleanTitle.length === 0) {
+      console.warn("Titre de conversation vide, impossible de créer");
+      return;
+    }
+    
+    const response = await fetch(
+      "http://localhost:8090/api/collections/conversations/records",
+      {
+        method: "POST", 
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json",
+        },
+        body: JSON.stringify({ 
+          title: cleanTitle 
+        }),
+      }
+    );
+    
+    if (response.ok === false) {
+      console.error("❌ Erreur lors de la création de conversation: API error");
+      error = "Impossible de créer la conversation";
+      return; 
+    }
+    
+    const data = await response.json();
+    
+    if (data && data.title) {
+      conversations = conversations.concat(data);
+      
+      newConversationTitle = "";
+      
+      selectedConversation = data;
+      
+      showSidebar = false;
+      
+      console.log(`✅ Nouvelle conversation créée: "${data.title}"`);
+      
+    } else {
+      console.error("❌ Réponse invalide lors de la création de conversation");
+      error = "Impossible de créer la conversation";
+    }
+  }
+
+  async function deleteConversation(conversationId) {
+    const response = await fetch(
+      `http://localhost:8090/api/collections/conversations/records/${conversationId}`,
+      {
+        method: "DELETE", 
+      }
+    );
+    
+    if (response.ok === false) {
+      console.error("❌ Erreur lors de la suppression: API error");
+      error = "Impossible de supprimer la conversation";
+      return; 
+    }
+    
+    conversations = filterConversationsWithoutId(conversations, conversationId);
+    
+    if (selectedConversation && selectedConversation.id === conversationId) {
+      if (conversations.length > 0) {
+        selectedConversation = conversations[conversations.length - 1];
+      } else {
+        selectedConversation = null;
+      }
+    }
+    
+    console.log(`✅ Conversation supprimée: ID ${conversationId}`);
+  }
+
+  async function sendMessage() {
+    
+    if (isLoading === true) {
+      console.warn("Envoi déjà en cours, veuillez patienter");
+      return; 
+    }
+    
+    if (selectedConversation === null) {
+      console.warn("Aucune conversation sélectionnée");
+      return; 
+    }
+    
+    const cleanMessage = pendingMessage.replace(/^\s+|\s+$/g, '');
+    
+    if (cleanMessage.length === 0) {
+      console.warn("Message vide, impossible d'envoyer");
+      return; 
+    }
+
+    const tempMessage = cleanMessage;
+
+    isLoading = true;
+    
+    error = null;
+
+    const userMessage = { 
+      role: "user", 
+      content: cleanMessage, 
+      timestamp: createTimestamp() 
+    };
+    
+    messages = messages.concat(userMessage);
+
+    pendingMessage = "";
+
+    const pocketbaseUserResponse = await fetch("http://localhost:8090/api/collections/messages/records", {
+      method: "POST", 
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      body: JSON.stringify({
+        content: tempMessage, 
+        is_ai_response: false, 
+        conversation: selectedConversation.id, 
+      }),
+    });
+
+    if (pocketbaseUserResponse.ok === false) {
+      console.warn("Impossible de sauvegarder le message utilisateur dans PocketBase");
+      error = "Erreur de sauvegarde du message utilisateur";
+    }
+    
+    const response = await fetch(
+      "https://api.mistral.ai/v1/chat/completions",
+      {
+        method: "POST", 
+        headers: {
+          "Content-Type": "application/json", 
+          Accept: "application/json", 
+          Authorization: `Bearer ${mistralToken}`, 
+        },
+        body: JSON.stringify({
+          model: "mistral-small-latest", 
+          messages: convertMessagesForAPI(messages),
+        }),
+      }
+    );
+
+    if (response.ok === false) {
+      console.error("Erreur de l'API Mistral");
+      error = "Problème avec l'API Mistral. Vérifiez votre token.";
+      
+      const errorUserMessage = { role: "user", content: tempMessage };
+      messages = messages.concat(errorUserMessage);
+      
+      isLoading = false;
+      return; 
+    }
+
+    
+    const data = await response.json();
+    
+    if (data.choices && data.choices.length > 0 && data.choices[0].message) {
+      const assistantMessage = {
+        role: "assistant",
+        content: data.choices[0].message.content, 
+        timestamp: createTimestamp(),
+      };
+      
+      messages = messages.concat(assistantMessage);
+
+      const pocketbaseAssistantResponse = await fetch("http://localhost:8090/api/collections/messages/records", {
+        method: "POST", 
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json",
+        },
+        body: JSON.stringify({
+          content: assistantMessage.content, 
+          is_ai_response: true, 
+          conversation: selectedConversation.id, 
+        }),
+      });
+      
+      if (pocketbaseAssistantResponse.ok === false) {
+        console.warn("Impossible de sauvegarder la réponse de l'assistant dans PocketBase");
+        error = "Erreur de sauvegarde de la réponse";
+      }
+      
+    } else {
+      console.error("Réponse invalide de l'API");
+      error = "Réponse invalide reçue de l'API";
+      
+      const errorUserMessage = { role: "user", content: tempMessage };
+      messages = messages.concat(errorUserMessage);
+    }
+    
+    isLoading = false;
+  }
+
+  function getMessageClass(message) {
+    if (message.role === "user") {
+      return "user";
+    } else if (message.role === "assistant") {
+      return "assistant";
+    } else {
+      return ""; // Par défaut, aucune classe
+    }
+  }
+</script>
+
+
+
+
+<div class="container">
+  
+  {#if showTokenInput}
+    <div class="token-input">
+      <input
+        bind:value={mistralToken}
+        placeholder="Entrez votre token Mistral"
+        onkeydown={handleTokenKeyDown}
+      />
+      <button onclick={handleTokenSubmit}>Enregistrer</button>
+    </div>
+    
+  {:else}
+    <div class="content">
+      
+      <button
+        class={toggleButtonClass}
+        onclick={toggleSidebar}
+      >
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M4 6H20M4 12H20M4 18H20" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </button>
+      
+      <div class={sidebarClass}>
         
-        <!-- Message d'un utilisateur -->
-        <div class="user">
-          <div class="markdown-body">
-            <p>hello</p>
-          </div>
-          <div class="timestamp">09:59</div>
+        <div class="title">
+          <h2>Conversations</h2>
         </div>
         
-        <!-- Message de l'assistant -->
-        <div class="assistant">
-          <div class="markdown-body">
-            <p>
-              Bonjour, je suis un assistant virtuel. Comment puis-je vous aider
-              ?
-            </p>
-          </div>
-          <div class="timestamp">10:00</div>
-        </div>
+        <ul>
+          {#each conversations as conversation}
+            
+            <li
+              role="button"
+              tabindex="0"
+              onclick={() => selectConversation(conversation)}
+              class:selected={selectedConversation &&
+                selectedConversation.id === conversation.id}
+            >
+              
+              {conversation.title}
+              
+              <button onclick={() => deleteConversation(conversation.id)}>X</button>
+            </li>
+          {/each}
+        </ul>
+        
+        <input
+          bind:value={newConversationTitle}
+          placeholder="Nouveau titre de conversation"
+        />
+        <button onclick={createConversation}>Créer</button>
       </div>
 
-      <!-- Zone de saisie pour écrire de nouveaux messages -->
-      <div class="input-area">
-        <textarea
-          placeholder="Tapez votre message..."
-          rows="1"
-          autocomplete="off"
-        ></textarea>
+      <div class={chatContainerClass}>
+        
+        <div class="messages">
+          {#each messages as message}
+            <div class={getMessageClass(message)}>
+              <div class="markdown-body">
+                <Markdown md={message.content} />
+              </div>
+              
+                  <div class="timestamp">
+                    {formatTimestamp(message.timestamp)}
+                  </div>
+            </div>
+          {/each}
+        </div>
 
-        <button>Envoyer</button>
+        <div class="input-area">
+          
+          {#if error}
+            <div class="error">{error}</div>
+          {/if}
+
+          <textarea
+            bind:value={pendingMessage}
+            placeholder="Tapez votre message... (Entrée pour envoyer, Shift+Entrée pour nouvelle ligne)"
+            rows="1"
+            autocomplete="off"
+            disabled={isLoading}
+            onkeydown={handleTextareaKeyDown}
+          ></textarea>
+
+          <button
+            onclick={sendMessage}
+            disabled={sendButtonDisabled}
+          >
+            {getSendButtonText()}
+          </button>
+
+          {#if isLoading}
+            <div class="loader"></div>
+          {/if}
+        </div>
       </div>
     </div>
-  </div>
+  {/if}
 </div>
 
 <style>
-  /* Styles CSS pour l'interface */
-  
-  /* Conteneur principal - occupe toute la hauteur de l'écran */
   .container {
     display: flex;
-    flex-direction: column; /* Disposition verticale */
-    height: 100vh; /* 100% de la hauteur de la fenêtre */
+    flex-direction: column;
+    height: 100vh; 
   }
 
-  /* Zone de contenu flexible */
-  .content {
+  .token-input {
     display: flex;
-    flex: 1; /* Prend tout l'espace disponible */
+    justify-content: center; 
+    align-items: center; 
+    height: 100vh; 
+    background: #f5f5f5; 
   }
 
-  /* Conteneur du chat */
+  .token-input input {
+    padding: 0.5rem;
+    border: 1px solid #dee2e6; 
+    border-radius: 0.25rem; 
+    margin-right: 0.5rem; 
+  }
+
+  .token-input button {
+    padding: 0.5rem 1rem;
+    background: #007bff; 
+    color: white;
+    border: none;
+    border-radius: 0.25rem;
+    cursor: pointer;
+  }
+
+    .content {
+    display: flex;
+    flex: 1; 
+  }
+  
+  .toggle-sidebar {
+    position: fixed; 
+    top: 1rem; 
+    color: white;
+    border: none;
+    border-radius: 0.5rem;
+    cursor: pointer;
+    padding: 0.75rem;
+    z-index: 1000; 
+    background: #007bff; 
+    transition: left 0.3s ease;
+    box-shadow: 0 4px 12px rgba(0, 123, 255, 0.3); 
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .toggle-sidebar.sidebar-closed {
+    left: 1rem; 
+  }
+
+  .toggle-sidebar.sidebar-open {
+    left: 270px; 
+  }
+
+  .toggle-sidebar svg {
+    width: 24px;
+    height: 24px;
+    color: white;
+  }
+
+    .d-none {
+    display: none;
+  }
+
+  .d-inline {
+    display: inline-block;
+  }
+
+  .sidebar {
+    width: 250px; 
+    background: #2c3e50; 
+    color: white;
+    padding: 1.5rem;
+    display: flex;
+    flex-direction: column; 
+    gap: 1rem; 
+    position: fixed; 
+    top: 0;
+    left: 0; 
+    height: 100vh; 
+    overflow-y: auto; 
+    transform: translateX(-100%); 
+    transition: transform 0.3s ease; 
+    z-index: 500;
+    box-shadow: 2px 0 10px rgba(0, 0, 0, 0.1);
+  }
+
+  .sidebar.show {
+    transform: translateX(0);
+  }
+
+  .sidebar .title {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    padding-bottom: 1rem;
+    border-bottom: 1px solid #34495e;
+    margin-bottom: 1rem;
+  }
+
+  .sidebar h2 {
+    margin: 0;
+    font-size: 1.2rem;
+    font-weight: 600;
+    color: #ecf0f1;
+  }
+
+  .sidebar ul {
+    list-style: none; 
+    padding: 0;
+    margin: 0;
+    flex: 1; 
+    overflow-y: auto; 
+    min-height: 200px; 
+  }
+
+  .sidebar li {
+    padding: 0.75rem;
+    cursor: pointer; 
+    border-radius: 0.5rem;
+    transition: all 0.2s ease; 
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 0.5rem;
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid transparent;
+  }
+
+  .sidebar li:hover {
+    background: rgba(255, 255, 255, 0.1);
+    transform: translateX(2px);
+  }
+
+  .sidebar li.selected {
+    background: #3498db;
+    border-color: #2980b9;
+    box-shadow: 0 2px 8px rgba(52, 152, 219, 0.3);
+  }
+
+  .sidebar li {
+    font-size: 0.9rem;
+    color: #ecf0f1;
+  }
+
+  .sidebar li button {
+    background: #e74c3c;
+    color: white;
+    border: none;
+    border-radius: 50%;
+    width: 24px;
+    height: 24px;
+    font-size: 14px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    margin-left: 0.5rem;
+    transition: all 0.2s ease;
+    padding: 0; 
+    line-height: 1;
+  }
+
+  .sidebar li button:hover {
+    background: #c0392b;
+    transform: scale(1.1);
+  }
+
+  .sidebar input {
+    padding: 0.75rem;
+    border: 1px solid #34495e;
+    border-radius: 0.5rem;
+    color: #2c3e50;
+    background: #ecf0f1;
+    font-size: 0.9rem;
+    width: 100%;
+    margin-top: auto; 
+  }
+
+  .sidebar input:focus {
+    outline: none;
+    border-color: #3498db;
+    box-shadow: 0 0 0 2px rgba(52, 152, 219, 0.2);
+  }
+
+  .sidebar button:not(.toggle-sidebar):not(li button) {
+    padding: 0.75rem;
+    background: #27ae60;
+    color: white;
+    border: none;
+    border-radius: 0.5rem;
+    cursor: pointer;
+    font-weight: 500;
+    transition: all 0.2s ease;
+    margin-top: 0.5rem;
+  }
+
+  .sidebar button:not(.toggle-sidebar):not(li button):hover {
+    background: #219a52;
+    transform: translateY(-1px);
+    box-shadow: 0 2px 8px rgba(39, 174, 96, 0.3);
+  }
+
   .chat-container {
-    flex: 1; /* Prend tout l'espace disponible */
+    flex: 1; 
     display: flex;
-    flex-direction: column; /* Messages en haut, saisie en bas */
-    padding: 1rem; /* Espacement intérieur */
-    background: #f5f5f5; /* Couleur de fond gris clair */
+    flex-direction: column; 
+    padding: 1rem;
+    background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%); 
+    margin-left: 0; 
+    transition: margin-left 0.3s ease;
+    min-height: 100vh;
   }
 
-  /* Zone des messages */
+  .chat-container:not(.full) {
+    margin-left: 250px;
+  }
+
+  .chat-container.full {
+    margin-left: 0; 
+  }
+
   .messages {
-    flex: 1; /* Prend tout l'espace disponible */
-    overflow-y: auto; /* Défilement vertical si nécessaire */
-    padding: 1rem; /* Espacement intérieur */
+    flex: 1;
+    overflow-y: auto; 
+    padding: 1rem;
     display: flex;
-    flex-direction: column; /* Messages empilés verticalement */
-    gap: 1rem; /* Espacement entre les messages */
+    flex-direction: column;
+    gap: 1rem;
   }
 
-  /* Style des messages utilisateur - alignés à droite */
   .user {
-    align-self: flex-end; /* Alignement à droite */
-    background: white; /* Fond blanc */
-    color: black; /* Texte noir */
+    align-self: flex-end;
+    background: white;
+    color: black;
   }
 
-  /* Style des messages assistant - alignés à gauche */
   .assistant {
-    align-self: flex-start; /* Alignement à gauche */
-    background: #e9ecef; /* Fond gris */
-    color: #212529; /* Texte gris foncé */
+    align-self: flex-start;
+    background: #e9ecef; 
+    color: #212529;
   }
 
-  /* Style commun pour tous les messages */
   .messages > div {
-    max-width: 70%; /* Largeur maximale des bulles */
-    padding: 1rem; /* Espacement intérieur */
-    border-radius: 1rem; /* Coins arrondis */
-    animation: fadeIn 0.3s ease; /* Animation d'apparition */
+    max-width: 70%; 
+    padding: 1rem;
+    border-radius: 1rem; 
+    animation: fadeIn 0.3s ease;
   }
 
-  /* Style des horodatages */
   .timestamp {
-    font-size: 0.75rem; /* Taille de police plus petite */
-    opacity: 0.7; /* Transparence pour effet discret */
-    margin-top: 0.5rem; /* Espacement au-dessus */
+    font-size: 0.75rem; 
+    opacity: 0.7; 
+    margin-top: 0.5rem;
   }
 
-  /* Zone de saisie en bas */
   .input-area {
-    padding: 1rem; /* Espacement intérieur */
-    background: white; /* Fond blanc */
-    border-radius: 1rem; /* Coins arrondis */
-    box-shadow: 0 -2px 10px rgba(0, 0, 0, 0.05); /* Ombre subtile */
-    display: flex; /* Disposition en ligne */
-    gap: 1rem; /* Espacement entre les éléments */
-    align-items: center; /* Alignement vertical centré */
+    padding: 1rem;
+    background: white;
+    border-radius: 1rem;
+    box-shadow: 0 -2px 10px rgba(0, 0, 0, 0.05); 
+    display: flex;
+    gap: 1rem;
+    align-items: center;
   }
 
-  /* Style du champ de saisie */
   textarea {
-    flex: 1; /* Prend tout l'espace disponible */
-    padding: 0.75rem; /* Espacement intérieur */
-    border: 1px solid #dee2e6; /* Bordure grise */
-    border-radius: 0.5rem; /* Coins arrondis */
-    resize: none; /* Empêche le redimensionnement */
-    font-family: inherit; /* Hérite de la police parent */
+    flex: 1; 
+    padding: 0.75rem;
+    border: 1px solid #dee2e6;
+    border-radius: 0.5rem;
+    resize: none; 
+    font-family: inherit;
   }
 
-  /* Style du bouton d'envoi */
   button {
-    padding: 0.75rem 1.5rem; /* Espacement intérieur */
-    background: #007bff; /* Fond bleu */
-    color: white; /* Texte blanc */
-    border: none; /* Pas de bordure */
-    border-radius: 0.5rem; /* Coins arrondis */
-    cursor: pointer; /* Curseur de sélection */
-    transition: opacity 0.2s; /* Transition douce pour l'opacité */
+    padding: 0.75rem 1.5rem;
+    background: #007bff;
+    color: white;
+    border: none;
+    border-radius: 0.5rem;
+    cursor: pointer;
+    transition: opacity 0.2s; 
   }
 
-  /* Style du bouton désactivé */
   button:disabled {
-    opacity: 0.6; /* Transparence pour indiquer l'état désactivé */
-    cursor: not-allowed; /* Curseur d'interdiction */
+    opacity: 0.6; 
+    cursor: not-allowed;
   }
 
-  /* Animation de rotation (pour les indicateurs de chargement) */
+  .error {
+    color: #dc3545; 
+    font-size: 0.9rem;
+    margin-bottom: 0.5rem;
+  }
+
+  .loader {
+    border: 4px solid #f3f3f3;
+    border-top: 4px solid #007bff;
+    border-radius: 50%;
+    width: 24px;
+    height: 24px;
+    animation: spin 1s linear infinite;
+  }
+
   @keyframes spin {
     0% {
       transform: rotate(0deg);
@@ -162,15 +864,40 @@
     }
   }
 
-  /* Animation d'apparition en fondu */
   @keyframes fadeIn {
     from {
-      opacity: 0; /* Commence invisible */
-      transform: translateY(10px); /* Légèrement décalé vers le bas */
+      opacity: 0;
+      transform: translateY(10px); 
     }
     to {
-      opacity: 1; /* Finit visible */
-      transform: translateY(0); /* Position finale */
+      opacity: 1; 
+      transform: translateY(0);
+    }
+  }
+
+  @media (max-width: 768px) {
+    
+    .toggle-sidebar {
+      display: flex;
+    }
+
+    .sidebar {
+      width: 100vw; 
+      height: 100vh; 
+      z-index: 200; 
+    }
+
+    .sidebar.show {
+      transform: translateX(0); 
+    }
+
+    .chat-container,
+    .chat-container:not(.full) {
+      margin-left: 0; 
+    }
+
+    .toggle-sidebar.sidebar-open {
+      left: 1rem; 
     }
   }
 </style>
