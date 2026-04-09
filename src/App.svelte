@@ -1,106 +1,72 @@
 <script>
   import Markdown from "svelte-exmarkdown";
-  
   import "./app.css";
-  
   import "./md.css";
-  
   import { onMount } from "svelte";
-  
+
+  // --- ÉTATS (RUNES SVELTE 5) ---
   let conversations = $state([]);
-  
   let selectedConversation = $state(null);
-  
   let messages = $state([]);
-  
   let pendingMessage = $state("");
-  
   let isLoading = $state(false);
-  
   let error = $state(null);
-  
   let newConversationTitle = $state("");
   let mistralToken = $state("");
-  
   let showTokenInput = $state(true); 
-
   let showSidebar = $state(false);
-  
+
+  // --- ÉTATS DÉRIVÉS ---
   let toggleButtonClass = $derived(showSidebar ? "toggle-sidebar sidebar-open" : "toggle-sidebar sidebar-closed");
-  
   let sidebarClass = $derived(showSidebar ? "sidebar show" : "sidebar");
-  
   let chatContainerClass = $derived(showSidebar ? "chat-container" : "chat-container full");
+  let sendButtonDisabled = $derived(isLoading || pendingMessage.trim().length === 0);
 
-  function getSendButtonText() {
-    if (isLoading) {
-      return "Envoi...";
-    } else {
-      return "Envoyer";
-    }
-  }
-
-  let sendButtonDisabled = $derived(
-    isLoading === true || pendingMessage.replace(/^\s+|\s+$/g, '').length === 0
-  );
-
+  // --- INITIALISATION ---
   onMount(async () => {
     const savedToken = localStorage.getItem("mistralToken");
-    if (savedToken !== null) {
+    if (savedToken) {
       mistralToken = savedToken;
+      showTokenInput = false;
     }
 
-    const response = await fetch(
-      "http://localhost:8090/api/collections/conversations/records"
-    );
-    
-    if (response.ok === false) {
-      console.warn("Impossible de charger les conversations");
-      conversations = [];
-      return; 
-    }
-    
-    const data = await response.json();
-    
-    if (data && data.items) {
-      conversations = data.items;
+    try {
+      const response = await fetch("http://localhost:8090/api/collections/conversations/records");
+      if (!response.ok) throw new Error("Erreur lors du chargement des conversations");
+      
+      const data = await response.json();
+      conversations = data.items || [];
       
       if (conversations.length > 0) {
         selectedConversation = conversations[conversations.length - 1];
       }
-      
-      console.log(`${conversations.length} conversations chargées`);
-      
-    } else {
-      console.warn("⚠️ Aucune conversation reçue depuis PocketBase");
-      conversations = [];
+    } catch (err) {
+      console.error(err.message);
+      error = "Impossible de connecter PocketBase";
     }
   });
 
+  // --- LOGIQUE DES MESSAGES ---
   async function loadMessages(conversationId) {
-    const response = await fetch(
-      `http://localhost:8090/api/collections/messages/records?filter=(conversation='${conversationId}')`
-    );
-    
-    if (response.ok === false) {
-      console.warn("Impossible de charger les messages");
-      messages = [];
-      return; 
-    }
-    
-    const data = await response.json();
-    
-    if (data && data.items) {
-      messages = convertPocketBaseToMessages(data.items);
+    try {
+      const response = await fetch(
+        `http://localhost:8090/api/collections/messages/records?filter=(conversation='${conversationId}')&sort=created`
+      );
+      if (!response.ok) throw new Error("Erreur messages");
       
-      console.log(`${messages.length} messages chargés pour la conversation "${selectedConversation.title}"`);
-      
-    } else {
-      console.warn("⚠️ Aucun message reçu depuis PocketBase");
+      const data = await response.json();
+      messages = data.items.map(item => ({
+        role: item.is_ai_response ? "assistant" : "user",
+        content: item.content,
+        timestamp: item.created,
+      }));
+    } catch (err) {
+      console.warn(err.message);
       messages = [];
     }
   }
 
+  // Réaction au changement de conversation
   $effect(() => {
     if (selectedConversation) {
       loadMessages(selectedConversation.id);
@@ -109,434 +75,197 @@
     }
   });
 
-  function createTimestamp() {
-    return Date.now();
-  }
+  // --- ACTIONS ---
+  async function sendMessage() {
+    if (isLoading || !selectedConversation) return;
 
-  function formatTimestamp(timestamp) {
-    const dateObject = new Date(timestamp);
-    
-    const hours = dateObject.getHours();
-    const minutes = dateObject.getMinutes();
-    
-    let formattedHours = hours;
-    if (hours < 10) {
-      formattedHours = "0" + hours;
-    }
-    
-    let formattedMinutes = minutes;
-    if (minutes < 10) {
-      formattedMinutes = "0" + minutes;
-    }
-    
-    return formattedHours + ":" + formattedMinutes;
-  }
+    const cleanMessage = pendingMessage.trim();
+    if (!cleanMessage) return;
 
-  function handleTokenSubmit() {
-    
-    const cleanToken = mistralToken.replace(/^\s+|\s+$/g, '');
-    
-    if (cleanToken.length === 0) {
-      console.warn("Token vide, impossible de continuer");
-      return; 
-    }
-    
-    localStorage.setItem("mistralToken", cleanToken);
-    
-    mistralToken = cleanToken;
-    
-    showTokenInput = false;
-  }
+    isLoading = true;
+    error = null;
 
-  function convertMessagesForAPI(messagesList) {
-    const convertedMessages = [];
-    
-    for (let i = 0; i < messagesList.length; i++) {
-      const currentMessage = messagesList[i];
+    try {
+      // 1. On envoie à PocketBase SANS l'ajouter à la main dans la liste "messages"
+      const pbRes = await fetch("http://localhost:8090/api/collections/messages/records", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          content: cleanMessage,
+          is_ai_response: false,
+          conversation: selectedConversation.id,
+        }),
+      });
+
+      if (!pbRes.ok) throw new Error("Erreur PocketBase");
       
-      const apiMessage = {
-        role: currentMessage.role,      
-        content: currentMessage.content 
-      };
-      
-      convertedMessages.push(apiMessage);
-    }
-    
-    return convertedMessages;
-  }
+      // On vide l'input
+      pendingMessage = "";
 
-  function convertPocketBaseToMessages(pocketbaseItems) {
-    const convertedMessages = [];
-    
-    for (let i = 0; i < pocketbaseItems.length; i++) {
-      const currentItem = pocketbaseItems[i];
-      
-      let messageRole;
-      if (currentItem.is_ai_response) {
-        messageRole = "assistant"; 
-      } else {
-        messageRole = "user"; 
+      // 2. On force le rechargement des messages pour voir celui qu'on vient d'envoyer
+      await loadMessages(selectedConversation.id);
+
+      // 3. Appel Mistral
+      const mistralRes = await fetch("https://api.mistral.ai/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${mistralToken}`,
+        },
+        body: JSON.stringify({
+          model: "mistral-small-latest",
+          messages: messages.map(m => ({ role: m.role, content: m.content })),
+        }),
+      });
+
+      if (!mistralRes.ok) {
+        if (mistralRes.status === 401) throw new Error("Token invalide ou expiré");
+        throw new Error("Erreur API Mistral");
       }
-      
-      const formattedMessage = {
-        role: messageRole,
-        content: currentItem.content,    
-        timestamp: currentItem.created,  
-      };
-      
-      convertedMessages.push(formattedMessage);
-    }
-    
-    return convertedMessages;
-  }
 
-  function filterConversationsWithoutId(conversationsList, conversationIdToRemove) {
-    const remainingConversations = [];
-    
-    for (let i = 0; i < conversationsList.length; i++) {
-      const currentConversation = conversationsList[i];
-      
-      if (currentConversation.id !== conversationIdToRemove) {
-        remainingConversations.push(currentConversation);
+      const data = await mistralRes.json();
+      const aiContent = data.choices[0].message.content;
+
+      // 4. Sauvegarde Réponse IA
+      await fetch("http://localhost:8090/api/collections/messages/records", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          content: aiContent,
+          is_ai_response: true,
+          conversation: selectedConversation.id,
+        }),
+      });
+
+      // 5. On recharge une dernière fois pour voir la réponse de l'IA
+      await loadMessages(selectedConversation.id);
+
+    } catch (err) {
+      error = err.message;
+      // Si le token est mauvais, on permet de le rechager
+      if (err.message.includes("Token")) {
+        showTokenInput = true; 
       }
-    }
-    
-    return remainingConversations;
-  }
-
-  function toggleSidebar() {
-    showSidebar = !showSidebar;
-  }
-
-  function selectConversation(conversation) {
-    selectedConversation = conversation;
-    
-    showSidebar = false;
-  }
-
-  function handleTextareaKeyDown(event) {
-    if (event.key === "Enter") {
-      if (event.shiftKey === true) {
-        return;
-      }
-      
-      event.preventDefault();
-      
-      sendMessage();
-    }
-  }
-
-  function handleTokenKeyDown(event) {
-    if (event.key === "Enter") {
-      handleTokenSubmit();
+    } finally {
+      isLoading = false;
     }
   }
 
   async function createConversation() {
-    const cleanTitle = newConversationTitle.replace(/^\s+|\s+$/g, '');
-    
-    if (cleanTitle.length === 0) {
-      console.warn("Titre de conversation vide, impossible de créer");
-      return;
-    }
-    
-    const response = await fetch(
-      "http://localhost:8090/api/collections/conversations/records",
-      {
-        method: "POST", 
-        headers: {
-          "Content-Type": "application/json",
-          Accept: "application/json",
-        },
-        body: JSON.stringify({ 
-          title: cleanTitle 
-        }),
-      }
-    );
-    
-    if (response.ok === false) {
-      console.error("❌ Erreur lors de la création de conversation: API error");
-      error = "Impossible de créer la conversation";
-      return; 
-    }
-    
-    const data = await response.json();
-    
-    if (data && data.title) {
-      conversations = conversations.concat(data);
-      
-      newConversationTitle = "";
-      
-      selectedConversation = data;
-      
-      showSidebar = false;
-      
-      console.log(`✅ Nouvelle conversation créée: "${data.title}"`);
-      
-    } else {
-      console.error("❌ Réponse invalide lors de la création de conversation");
-      error = "Impossible de créer la conversation";
-    }
-  }
+    const title = newConversationTitle.trim();
+    if (!title) return;
 
-  async function deleteConversation(conversationId) {
-    const response = await fetch(
-      `http://localhost:8090/api/collections/conversations/records/${conversationId}`,
-      {
-        method: "DELETE", 
-      }
-    );
-    
-    if (response.ok === false) {
-      console.error("❌ Erreur lors de la suppression: API error");
-      error = "Impossible de supprimer la conversation";
-      return; 
-    }
-    
-    conversations = filterConversationsWithoutId(conversations, conversationId);
-    
-    if (selectedConversation && selectedConversation.id === conversationId) {
-      if (conversations.length > 0) {
-        selectedConversation = conversations[conversations.length - 1];
-      } else {
-        selectedConversation = null;
-      }
-    }
-    
-    console.log(`✅ Conversation supprimée: ID ${conversationId}`);
-  }
-
-  async function sendMessage() {
-    
-    if (isLoading === true) {
-      console.warn("Envoi déjà en cours, veuillez patienter");
-      return; 
-    }
-    
-    if (selectedConversation === null) {
-      console.warn("Aucune conversation sélectionnée");
-      return; 
-    }
-    
-    const cleanMessage = pendingMessage.replace(/^\s+|\s+$/g, '');
-    
-    if (cleanMessage.length === 0) {
-      console.warn("Message vide, impossible d'envoyer");
-      return; 
-    }
-
-    const tempMessage = cleanMessage;
-
-    isLoading = true;
-    
-    error = null;
-
-    const userMessage = { 
-      role: "user", 
-      content: cleanMessage, 
-      timestamp: createTimestamp() 
-    };
-    
-    messages = messages.concat(userMessage);
-
-    pendingMessage = "";
-
-    const pocketbaseUserResponse = await fetch("http://localhost:8090/api/collections/messages/records", {
-      method: "POST", 
-      headers: {
-        "Content-Type": "application/json",
-        Accept: "application/json",
-      },
-      body: JSON.stringify({
-        content: tempMessage, 
-        is_ai_response: false, 
-        conversation: selectedConversation.id, 
-      }),
-    });
-
-    if (pocketbaseUserResponse.ok === false) {
-      console.warn("Impossible de sauvegarder le message utilisateur dans PocketBase");
-      error = "Erreur de sauvegarde du message utilisateur";
-    }
-    
-    const response = await fetch(
-      "https://api.mistral.ai/v1/chat/completions",
-      {
-        method: "POST", 
-        headers: {
-          "Content-Type": "application/json", 
-          Accept: "application/json", 
-          Authorization: `Bearer ${mistralToken}`, 
-        },
-        body: JSON.stringify({
-          model: "mistral-small-latest", 
-          messages: convertMessagesForAPI(messages),
-        }),
-      }
-    );
-
-    if (response.ok === false) {
-      console.error("Erreur de l'API Mistral");
-      error = "Problème avec l'API Mistral. Vérifiez votre token.";
-      
-      const errorUserMessage = { role: "user", content: tempMessage };
-      messages = messages.concat(errorUserMessage);
-      
-      isLoading = false;
-      return; 
-    }
-
-    
-    const data = await response.json();
-    
-    if (data.choices && data.choices.length > 0 && data.choices[0].message) {
-      const assistantMessage = {
-        role: "assistant",
-        content: data.choices[0].message.content, 
-        timestamp: createTimestamp(),
-      };
-      
-      messages = messages.concat(assistantMessage);
-
-      const pocketbaseAssistantResponse = await fetch("http://localhost:8090/api/collections/messages/records", {
-        method: "POST", 
-        headers: {
-          "Content-Type": "application/json",
-          Accept: "application/json",
-        },
-        body: JSON.stringify({
-          content: assistantMessage.content, 
-          is_ai_response: true, 
-          conversation: selectedConversation.id, 
-        }),
+    try {
+      const res = await fetch("http://localhost:8090/api/collections/conversations/records", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title }),
       });
       
-      if (pocketbaseAssistantResponse.ok === false) {
-        console.warn("Impossible de sauvegarder la réponse de l'assistant dans PocketBase");
-        error = "Erreur de sauvegarde de la réponse";
-      }
+      if (!res.ok) throw new Error();
+      const newConvo = await res.json();
       
-    } else {
-      console.error("Réponse invalide de l'API");
-      error = "Réponse invalide reçue de l'API";
-      
-      const errorUserMessage = { role: "user", content: tempMessage };
-      messages = messages.concat(errorUserMessage);
+      conversations = [...conversations, newConvo];
+      selectedConversation = newConvo;
+      newConversationTitle = "";
+      showSidebar = false;
+    } catch (err) {
+      error = "Erreur lors de la création";
     }
-    
-    isLoading = false;
   }
 
-  function getMessageClass(message) {
-    if (message.role === "user") {
-      return "user";
-    } else if (message.role === "assistant") {
-      return "assistant";
-    } else {
-      return ""; // Par défaut, aucune classe
+  async function deleteConversation(id) {
+    try {
+      const res = await fetch(`http://localhost:8090/api/collections/conversations/records/${id}`, {
+        method: "DELETE"
+      });
+      if (!res.ok) throw new Error();
+      
+      conversations = conversations.filter(c => c.id !== id);
+      if (selectedConversation?.id === id) {
+        selectedConversation = conversations.length > 0 ? conversations[conversations.length - 1] : null;
+      }
+    } catch (err) {
+      error = "Erreur de suppression";
+    }
+  }
+
+  // --- UTILS ---
+  function handleTokenSubmit() {
+    const token = mistralToken.trim();
+    if (token) {
+      localStorage.setItem("mistralToken", token);
+      showTokenInput = false;
+    }
+  }
+
+  function formatTimestamp(ts) {
+    return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  }
+
+  function handleKeyDown(e, callback) {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      callback();
     }
   }
 </script>
 
-
-
-
 <div class="container">
-  
   {#if showTokenInput}
     <div class="token-input">
-      <input
-        bind:value={mistralToken}
-        placeholder="Entrez votre token Mistral"
-        onkeydown={handleTokenKeyDown}
-      />
-      <button onclick={handleTokenSubmit}>Enregistrer</button>
+      <input bind:value={mistralToken} placeholder="Token Mistral API" onkeydown={(e) => handleKeyDown(e, handleTokenSubmit)} />
+      <button onclick={handleTokenSubmit}>Valider</button>
     </div>
-    
   {:else}
     <div class="content">
-      
-      <button
-        class={toggleButtonClass}
-        onclick={toggleSidebar}
-      >
-        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <path d="M4 6H20M4 12H20M4 18H20" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+      <button class={toggleButtonClass} onclick={() => showSidebar = !showSidebar}>
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M4 6h16M4 12h16M4 18h16" stroke-linecap="round"/>
         </svg>
       </button>
       
       <div class={sidebarClass}>
-        
-        <div class="title">
-          <h2>Conversations</h2>
-        </div>
-        
+        <div class="title"><h2>Conversations</h2></div>
         <ul>
-          {#each conversations as conversation}
-            
-            <li
-              role="button"
-              tabindex="0"
-              onclick={() => selectConversation(conversation)}
-              class:selected={selectedConversation &&
-                selectedConversation.id === conversation.id}
-            >
-              
-              {conversation.title}
-              
-              <button onclick={() => deleteConversation(conversation.id)}>X</button>
+          {#each conversations as convo}
+            <li class:selected={selectedConversation?.id === convo.id}>
+              <button class="convo-name" onclick={() => { selectedConversation = convo; showSidebar = false; }}>
+                {convo.title}
+              </button>
+              <button class="delete-btn" onclick={() => deleteConversation(convo.id)}>×</button>
             </li>
           {/each}
         </ul>
-        
-        <input
-          bind:value={newConversationTitle}
-          placeholder="Nouveau titre de conversation"
-        />
-        <button onclick={createConversation}>Créer</button>
+        <div class="sidebar-footer">
+          <input bind:value={newConversationTitle} placeholder="Nouveau chat..." onkeydown={(e) => handleKeyDown(e, createConversation)} />
+          <button onclick={createConversation}>+</button>
+        </div>
       </div>
 
       <div class={chatContainerClass}>
-        
         <div class="messages">
-          {#each messages as message}
-            <div class={getMessageClass(message)}>
+          {#each messages as msg}
+            <div class="message-wrapper {msg.role}">
               <div class="markdown-body">
-                <Markdown md={message.content} />
+                <Markdown md={msg.content} />
               </div>
-              
-                  <div class="timestamp">
-                    {formatTimestamp(message.timestamp)}
-                  </div>
+              <span class="timestamp">{formatTimestamp(msg.timestamp)}</span>
             </div>
           {/each}
         </div>
 
         <div class="input-area">
-          
-          {#if error}
-            <div class="error">{error}</div>
-          {/if}
-
-          <textarea
-            bind:value={pendingMessage}
-            placeholder="Tapez votre message... (Entrée pour envoyer, Shift+Entrée pour nouvelle ligne)"
-            rows="1"
-            autocomplete="off"
+          {#if error}<div class="error">{error}</div>{/if}
+          <textarea 
+            bind:value={pendingMessage} 
+            placeholder="Votre message..." 
+            onkeydown={(e) => handleKeyDown(e, sendMessage)}
             disabled={isLoading}
-            onkeydown={handleTextareaKeyDown}
           ></textarea>
-
-          <button
-            onclick={sendMessage}
-            disabled={sendButtonDisabled}
-          >
-            {getSendButtonText()}
+          <button onclick={sendMessage} disabled={sendButtonDisabled}>
+            {isLoading ? "..." : "Envoyer"}
           </button>
-
-          {#if isLoading}
-            <div class="loader"></div>
-          {/if}
         </div>
       </div>
     </div>
