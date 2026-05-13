@@ -73,12 +73,3 @@ Accessibility (A11y): Includes responsive breakpoints, high-contrast focus state
 
 📜 License
 This project was developed as part of the AT 1 (Develop a Secure Application) certification.
-
-
-### Pourquoi ce README est efficace pour ton diplôme :
-
-* **Validation de la compétence "Anglais"** : Le vocabulaire est précis (*Foreign keys*, *State management*, *Wrappped in try...catch*).
-* **Preuve de sécurité** : La section "Security" montre que tu as réfléchi aux risques et aux erreurs.
-* **Documentation technique** : La structure des dossiers et les instructions de setup montrent que tu sais travailler de manière organisée.
-
-**Tu peux maintenant copier-coller ce contenu dans ton fichier `README.md` !**
